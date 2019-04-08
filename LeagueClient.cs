@@ -20,269 +20,257 @@ using System.Threading.Tasks;
 
 namespace LCU.NET
 {
-    public sealed class LeagueClient : ILeagueClient
-    {
-        private static IDictionary<string, object> CacheDic = new Dictionary<string, object>();
+	public sealed class LeagueClient : ILeagueClient
+	{
+		private static IDictionary<string, object> CacheDic = new Dictionary<string, object> ();
 
-        private string Token;
-        private int Port;
-        private bool IsTryingToInit;
+		private string Token;
+		private int Port;
+		private bool IsTryingToInit;
+		private TaskCompletionSource<bool> connectionTaskCompletionSource;
 
-        private bool _Connected;
-        public bool IsConnected
-        {
-            get => _Connected;
-            private set
-            {
-                _Connected = value;
-                ConnectedChanged?.Invoke(value);
-            }
-        }
+		private bool _Connected;
+		public bool IsConnected {
+			get => _Connected;
+			private set {
+				_Connected = value;
+				ConnectedChanged?.Invoke (value);
+				connectionTaskCompletionSource.TrySetResult (value);
+			}
+		}
 
-        public IProxy Proxy { get; set; }
-        public IRestClient Client { get; }
-        public ILeagueSocket Socket { get; }
-        private readonly IProcessResolver ProcessResolver;
+		public Task<bool> ConnectionTask => connectionTaskCompletionSource.Task;
 
-        public event ConnectedChangedDelegate ConnectedChanged;
+		public IProxy Proxy { get; set; }
+		public IRestClient Client { get; }
+		public ILeagueSocket Socket { get; }
+		private readonly IProcessResolver ProcessResolver;
 
-        public static ILeagueClient CreateNew()
-        {
-            KernelBase kernel = new StandardKernel();
-            kernel.Bind<ILeagueClient>().To<LeagueClient>();
-            kernel.Bind<IRestClient>().To<RestClient>();
-            kernel.Bind<IProcessResolver>().To<ProcessResolver>();
-            kernel.Bind<ILeagueSocket>().To<LeagueSocket>();
-            kernel.Bind<ILSocket>().To<LWebSocket>();
+		public event ConnectedChangedDelegate ConnectedChanged;
 
-            return kernel.Get<ILeagueClient>();
-        }
+		public static ILeagueClient CreateNew ()
+		{
+			KernelBase kernel = new StandardKernel ();
+			kernel.Bind<ILeagueClient> ().To<LeagueClient> ();
+			kernel.Bind<IRestClient> ().To<RestClient> ();
+			kernel.Bind<IProcessResolver> ().To<ProcessResolver> ();
+			kernel.Bind<ILeagueSocket> ().To<LeagueSocket> ();
+			kernel.Bind<ILSocket> ().To<LWebSocket> ();
 
-        public LeagueClient(IRestClient restClient, IProcessResolver processResolver, ILeagueSocket socket)
-        {
-            this.Client = restClient;
-            this.ProcessResolver = processResolver;
-            this.Socket = socket;
-            this.Socket.Client = this;
-        }
-        
-        /// <summary>
-        /// Begins to look for the LoL client and inits when detected.
-        /// </summary>
-        public void BeginTryInit(InitializeMethod method = InitializeMethod.CommandLine, int interval = 500)
-        {
-            if (IsTryingToInit)
-                return;
+			return kernel.Get<ILeagueClient> ();
+		}
 
-            IsTryingToInit = true;
+		public LeagueClient (IRestClient restClient, IProcessResolver processResolver, ILeagueSocket socket)
+		{
+			this.Client = restClient;
+			this.ProcessResolver = processResolver;
+			this.Socket = socket;
+			this.Socket.Client = this;
 
-            new Thread(() =>
-            {
-                while (!Init(method))
-                {
-                    Thread.Sleep(interval);
-                }
+			connectionTaskCompletionSource = new TaskCompletionSource<bool> ();
+		}
 
-                IsTryingToInit = false;
-            })
-            {
-                IsBackground = true
-            }.Start();
-        }
+		/// <summary>
+		/// Begins to look for the LoL client and inits when detected.
+		/// </summary>
+		public void BeginTryInit (InitializeMethod method = InitializeMethod.CommandLine, int interval = 500)
+		{
+			if (IsTryingToInit)
+				return;
 
-        public bool Init(InitializeMethod method = InitializeMethod.CommandLine)
-        {
-            if (IsConnected)
-                return false;
-            
-            if (!GetClientInfo(method, out Port, out Token, out var p))
-                return false;
+			IsTryingToInit = true;
 
-            Client.BaseUrl = new Uri("https://127.0.0.1:" + Port);
-            Client.Authenticator = new HttpBasicAuthenticator("riot", Token);
-            Client.ConfigureWebRequest(o =>
-            {
-                o.Accept = "application/json";
-                o.ServerCertificateValidationCallback = delegate { return true; };
-            });
+			new Thread (() => {
+				while (!Init (method)) {
+					Thread.Sleep (interval);
+				}
 
-            if (!Socket.Connect(Port, Token))
-                return false;
+				IsTryingToInit = false;
+			}) {
+				IsBackground = true
+			}.Start ();
+		}
 
-            Socket.Closed += () => Close();
+		public bool Init (InitializeMethod method = InitializeMethod.CommandLine)
+		{
+			if (IsConnected)
+				return false;
 
-            IsConnected = true;
+			if (!GetClientInfo (method, out Port, out Token, out var p))
+				return false;
 
-            return true;
-        }
+			Client.BaseUrl = new Uri ("https://127.0.0.1:" + Port);
+			Client.Authenticator = new HttpBasicAuthenticator ("riot", Token);
+			Client.ConfigureWebRequest (o => {
+				o.Accept = "application/json";
+				o.ServerCertificateValidationCallback = delegate { return true; };
+			});
 
-        private bool GetClientInfo(InitializeMethod method, out int port, out string token, out Process proc)
-        {
-            if (method == InitializeMethod.CommandLine)
-            {
-                Process[] processes = ProcessResolver.GetProcessesByName("LeagueClientUx");
+			if (!Socket.Connect (Port, Token))
+				return false;
 
-                if (processes.Length == 0)
-                    goto exit;
+			Socket.Closed += () => Close ();
 
-                Process process = processes[0];
+			IsConnected = true;
 
-                string cmdLine = ProcessResolver.GetCommandLine(process);
+			return true;
+		}
 
-                if (cmdLine == null)
-                    goto exit;
-                
-                port = int.Parse(Regex.Match(cmdLine, @"(?<=--app-port=)\d+").Value);
-                token = Regex.Match(cmdLine, "(?<=--remoting-auth-token=).*?(?=\")").Value;
-                proc = process;
+		private bool GetClientInfo (InitializeMethod method, out int port, out string token, out Process proc)
+		{
+			if (method == InitializeMethod.CommandLine) {
+				Process[] processes = ProcessResolver.GetProcessesByName ("LeagueClientUx");
 
-                return true;
-            }
-            else if (method == InitializeMethod.Lockfile)
-            {
-                var p = Process.GetProcessesByName("LeagueClient");
+				if (processes.Length == 0)
+					goto exit;
 
-                if (p.Length == 0)
-                    goto exit;
+				Process process = processes[0];
 
-                string lockFilePath;
+				string cmdLine = ProcessResolver.GetCommandLine (process);
 
-                try
-                {
-                    lockFilePath = Path.GetFullPath(Path.Combine(Path.GetDirectoryName(p[0].MainModule.FileName), "../../../../../../lockfile"));
-                }
-                catch
-                {
-                    goto exit;
-                }
+				if (cmdLine == null)
+					goto exit;
 
-                if (!File.Exists(lockFilePath))
-                    goto exit;
+				port = int.Parse (Regex.Match (cmdLine, @"(?<=--app-port=)\d+").Value);
+				token = Regex.Match (cmdLine, "(?<=--remoting-auth-token=).*?(?=\")").Value;
+				proc = process;
 
-                string lockFile;
+				return true;
+			} else if (method == InitializeMethod.Lockfile) {
+				var p = Process.GetProcessesByName ("LeagueClient");
 
-                using (var stream = File.Open(lockFilePath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite))
-                    lockFile = new StreamReader(stream).ReadToEnd();
+				if (p.Length == 0)
+					goto exit;
 
-                string[] parts = lockFile.Split(':');
-                port = int.Parse(parts[2]);
-                token = parts[3];
-                proc = p[0];
+				string lockFilePath;
 
-                return true;
-            }
+				try {
+					lockFilePath = Path.GetFullPath (Path.Combine (Path.GetDirectoryName (p[0].MainModule.FileName), "../../../../../../lockfile"));
+				} catch {
+					goto exit;
+				}
 
-exit:
-            port = 0;
-            token = null;
-            proc = null;
-            return false;
-        }
+				if (!File.Exists (lockFilePath))
+					goto exit;
 
-        public void Close()
-        {
-            IsConnected = false;
-            Socket.Close();
-        }
-        
-        private static RestRequest BuildRequest(string resource, Method method, object data, string[] fields = null)
-        {
-            var req = new RestRequest(resource, method);
+				string lockFile;
 
-            if (data != null)
-            {
-                object realData = data;
+				using (var stream = File.Open (lockFilePath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite))
+					lockFile = new StreamReader (stream).ReadToEnd ();
 
-                if (fields?.Length != 0)
-                {
-                    var dic = new Dictionary<string, object>();
+				string[] parts = lockFile.Split (':');
+				port = int.Parse (parts[2]);
+				token = parts[3];
+				proc = p[0];
 
-                    foreach (var item in data.GetType().GetProperties().Where(o => fields.Contains(o.Name)))
-                    {
-                        dic[item.Name] = item.GetValue(data);
-                    }
+				return true;
+			}
 
-                    realData = dic;
-                }
+		exit:
+			port = 0;
+			token = null;
+			proc = null;
+			return false;
+		}
 
-                req.AddHeader("Content-Type", "application/json");
-                req.AddJsonBody(realData);
-            }
+		public void Close ()
+		{
+			IsConnected = false;
+			Socket.Close ();
+		}
 
-            return req;
-        }
+		private static RestRequest BuildRequest (string resource, Method method, object data, string[] fields = null)
+		{
+			var req = new RestRequest (resource, method);
 
-        public async Task<T> MakeRequestAsync<T>(string resource, Method method, object data = null, Action<IRestRequest> modifyRequest = null, params string[] fields)
-        {
-            if (Proxy != null && Proxy.Handle<T>(resource, method, data, out var ret))
-                return ret;
+			if (data != null) {
+				object realData = data;
 
-            if (!IsConnected)
-                return default;
+				if (fields?.Length != 0) {
+					var dic = new Dictionary<string, object> ();
 
-            var req = BuildRequest(resource, method, data, fields);
-            modifyRequest?.Invoke(req);
+					foreach (var item in data.GetType ().GetProperties ().Where (o => fields.Contains (o.Name))) {
+						dic[item.Name] = item.GetValue (data);
+					}
 
-            var resp = await Client.ExecuteTaskAsync(req);
-            CheckErrors(resp);
+					realData = dic;
+				}
 
-            //"spell1Id":     18446744073709552000
-            //ulong.MaxValue: 18446744073709551615
-            //y u do dis to me
-            string content = resp.Content.Replace("18446744073709552000", "-1");
+				req.AddHeader ("Content-Type", "application/json");
+				req.AddJsonBody (realData);
+			}
 
-            return JsonConvert.DeserializeObject<T>(resp.Content, new JsonSerializerSettings
-            {
-                NullValueHandling = NullValueHandling.Ignore
-            });
-        }
+			return req;
+		}
 
-        public async Task MakeRequestAsync(string resource, Method method, object data = null, Action<IRestRequest> modifyRequest = null, params string[] fields)
-        {
-            if (Proxy?.Handle(resource, method, data) == true)
-                return;
+		public async Task<T> MakeRequestAsync<T> (string resource, Method method, object data = null, Action<IRestRequest> modifyRequest = null, params string[] fields)
+		{
+			if (Proxy != null && Proxy.Handle<T> (resource, method, data, out var ret))
+				return ret;
 
-            if (!IsConnected)
-                return;
+			if (!IsConnected)
+				return default;
 
-            var req = BuildRequest(resource, method, data, fields);
-            modifyRequest?.Invoke(req);
+			var req = BuildRequest (resource, method, data, fields);
+			modifyRequest?.Invoke (req);
 
-            var resp = await Client.ExecuteTaskAsync(req);
-            CheckErrors(resp);
-        }
-        
-        private static void CheckErrors(IRestResponse response)
-        {
-            if (response.Content.Contains("\"errorCode\""))
-            {
-                var error = JsonConvert.DeserializeObject<ErrorData>(response.Content);
+			var resp = await Client.ExecuteTaskAsync (req);
+			CheckErrors (resp);
 
-                if (error.Message == "No active delegate")
-                    throw new NoActiveDelegateException(error);
+			//"spell1Id":     18446744073709552000
+			//ulong.MaxValue: 18446744073709551615
+			//y u do dis to me
+			string content = resp.Content.Replace ("18446744073709552000", "-1");
 
-                throw new APIErrorException(error);
-            }
-        }
+			return JsonConvert.DeserializeObject<T> (resp.Content, new JsonSerializerSettings {
+				NullValueHandling = NullValueHandling.Ignore
+			});
+		}
 
-        internal static T Cache<T>(Func<T> action)
-        {
-            var method = new StackFrame(1).GetMethod();
+		public async Task MakeRequestAsync (string resource, Method method, object data = null, Action<IRestRequest> modifyRequest = null, params string[] fields)
+		{
+			if (Proxy?.Handle (resource, method, data) == true)
+				return;
 
-            if (method.DeclaringType == typeof(LeagueClient))
-                method = new StackFrame(2).GetMethod();
+			if (!IsConnected)
+				return;
 
-            return Cache(method.DeclaringType.Name + "." + method.Name, action);
-        }
+			var req = BuildRequest (resource, method, data, fields);
+			modifyRequest?.Invoke (req);
 
-        internal static T Cache<T>(string id, Func<T> action)
-        {
-            if (!CacheDic.TryGetValue(id, out var val))
-            {
-                val = CacheDic[id] = action();
-            }
+			var resp = await Client.ExecuteTaskAsync (req);
+			CheckErrors (resp);
+		}
 
-            return (T)val;
-        }
-    }
+		private static void CheckErrors (IRestResponse response)
+		{
+			if (response.Content.Contains ("\"errorCode\"")) {
+				var error = JsonConvert.DeserializeObject<ErrorData> (response.Content);
+
+				if (error.Message == "No active delegate")
+					throw new NoActiveDelegateException (error);
+
+				throw new APIErrorException (error);
+			}
+		}
+
+		internal static T Cache<T> (Func<T> action)
+		{
+			var method = new StackFrame (1).GetMethod ();
+
+			if (method.DeclaringType == typeof (LeagueClient))
+				method = new StackFrame (2).GetMethod ();
+
+			return Cache (method.DeclaringType.Name + "." + method.Name, action);
+		}
+
+		internal static T Cache<T> (string id, Func<T> action)
+		{
+			if (!CacheDic.TryGetValue (id, out var val)) {
+				val = CacheDic[id] = action ();
+			}
+
+			return (T)val;
+		}
+	}
 }
