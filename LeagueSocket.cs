@@ -113,6 +113,8 @@ namespace LCU.NET
             if (IsPlaying)
                 return;
 
+            // The spellId is sometimes such a big number that the deserializer uses BigInteger, then crashes when trying to set it to int
+            message = message.Replace ("18446744073709552000", "-1").Replace ("18446744073709551615", "-1");
             var ev = JsonApiEvent.Parse(message);
 
             if (!ev.Equals(default(JsonApiEvent)))
